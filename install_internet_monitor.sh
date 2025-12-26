@@ -161,7 +161,6 @@ ASTERISK_CLI=${ASTERISK_CLI:-"/usr/sbin/asterisk"}
 MAX_LOG_SIZE=${MAX_LOG_SIZE:-10485760}  # 10MB default
 LOG_RETENTION=${LOG_RETENTION:-5}  # Keep 5 rotated logs
 NETWORK_OK=0
-LAST_STATUS=""
 LAST_RESTART_ATTEMPT=0
 RESTART_COOLDOWN=300  # 5 minutes between restart attempts
 CONSECUTIVE_FAILURES=0
@@ -242,34 +241,27 @@ print_error() {
     log_message "ERROR" "$1"
 }
 
-function play_audio {
+play_audio() {
     local audio_file="$1"
-    local audio_path
+    local full_path=""
     
-    # Handle both cases: with and without .ul extension
+    # Normalize audio file path - ensure .ul extension
     if [[ "$audio_file" == *.ul ]]; then
-        audio_path="$audio_file"
-    else
-        audio_path="${audio_file}.ul"
+        audio_file="${audio_file%.ul}"
     fi
     
-    # Check if file exists with or without path
-    if [ -f "$audio_path" ]; then
-        local full_path="$audio_path"
-    elif [ -f "${SOUND_DIR}/${audio_path}" ]; then
-        local full_path="${SOUND_DIR}/${audio_path}"
+    # Try to find the audio file in common locations
+    if [ -f "${SOUND_DIR}/${audio_file}.ul" ]; then
+        full_path="${SOUND_DIR}/${audio_file}.ul"
     elif [ -f "${audio_file}.ul" ]; then
-        local full_path="${audio_file}.ul"
-    elif [ -f "${SOUND_DIR}/${audio_file}.ul" ]; then
-        local full_path="${SOUND_DIR}/${audio_file}.ul"
+        full_path="${audio_file}.ul"
     else
-        print_warning "Audio file not found: $audio_path (checked $audio_path, ${SOUND_DIR}/${audio_path})"
+        print_warning "Audio file not found: ${audio_file}.ul (checked ${SOUND_DIR}/ and current directory)"
         return 1
     fi
     
     # Play audio if Asterisk CLI is available
     if [ -n "$ASTERISK_CLI" ] && [ -x "$ASTERISK_CLI" ]; then
-        # Extract just the filename without extension for Asterisk
         local filename
         filename=$(basename "$full_path" .ul)
         "$ASTERISK_CLI" -rx "rpt localplay $NODE $filename" >/dev/null 2>&1 || true
@@ -279,7 +271,7 @@ function play_audio {
     fi
 }
 
-function has_internet {
+has_internet() {
     local hosts="$1"
     local timeout="${2:-5}"
     local host
@@ -310,7 +302,7 @@ function has_internet {
     return 1
 }
 
-function test_dns {
+test_dns() {
     # Test DNS resolution using multiple methods for compatibility
     # Method 1: getent (most universal, available on most systems)
     if getent hosts google.com >/dev/null 2>&1; then
@@ -331,7 +323,7 @@ function test_dns {
     return 1
 }
 
-function comprehensive_connectivity_test {
+comprehensive_connectivity_test() {
     # Test multiple connectivity aspects
     local ping_hosts="${PING_HOSTS:-"1.1.1.1 8.8.8.8 208.67.222.222"}"
     
@@ -348,7 +340,7 @@ function comprehensive_connectivity_test {
     return 1
 }
 
-function detect_network_manager {
+detect_network_manager() {
     # Detect which network manager is running
     if systemctl is-active --quiet NetworkManager; then
         echo "NetworkManager"
@@ -361,7 +353,7 @@ function detect_network_manager {
     fi
 }
 
-function verify_networkmanager_status {
+verify_networkmanager_status() {
     # Verify NetworkManager is actually running and functional
     if ! systemctl is-active --quiet NetworkManager; then
         print_error "NetworkManager is not active"
@@ -387,7 +379,7 @@ function verify_networkmanager_status {
     fi
 }
 
-function restart_networkmanager {
+restart_networkmanager() {
     local nm_type
     nm_type=$(detect_network_manager)
     
@@ -432,7 +424,7 @@ function restart_networkmanager {
     fi
 }
 
-function try_reconnect {
+try_reconnect() {
     local current_time=$(date +%s)
     local time_since_last_restart=$((current_time - LAST_RESTART_ATTEMPT))
     
@@ -482,7 +474,6 @@ while [ "$RUNNING" -eq 1 ]; do
         if [ "$NETWORK_OK" -eq 0 ]; then
             play_audio "${SOUND_DIR}/internet-yes"
             print_status "Internet reconnected. AllStarLink node should be back on the network!"
-            LAST_STATUS="connected"
             # Reset cooldown and failure counters on successful connection
             CONSECUTIVE_FAILURES=0
             RESTART_COOLDOWN=300
@@ -493,7 +484,6 @@ while [ "$RUNNING" -eq 1 ]; do
         if [ "$NETWORK_OK" -eq 1 ]; then
             play_audio "${SOUND_DIR}/internet-no"
             print_warning "Internet lost. AllStarLink node is offline!"
-            LAST_STATUS="disconnected"
         fi
         NETWORK_OK=0
         # Disable error exit for reconnect attempt (may fail normally)
@@ -548,10 +538,16 @@ download_audio_files() {
     print_header "Downloading Audio Files"
     SOUND_DIR="/usr/share/asterisk/sounds/custom"
     mkdir -p "$SOUND_DIR"
-    cd "$SOUND_DIR" || {
-        print_error "Failed to create sound directory"
+    
+    # Save current directory and restore on exit
+    local original_dir
+    original_dir=$(pwd)
+    
+    # Change to sound directory
+    if ! cd "$SOUND_DIR"; then
+        print_error "Failed to change to sound directory"
         exit 1
-    }
+    fi
     
     # Check for download tool (wget or curl)
     local download_cmd=""
@@ -586,6 +582,9 @@ download_audio_files() {
         fi
         print_status "Downloaded $filename"
     done
+    
+    # Restore original directory
+    cd "$original_dir" || true
 }
 
 # Function to install service
